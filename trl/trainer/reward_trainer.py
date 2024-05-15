@@ -13,11 +13,14 @@
 # limitations under the License.
 import inspect
 import warnings
+from collections import defaultdict
 from dataclasses import FrozenInstanceError, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import pandas as pd
 import torch
 import torch.nn as nn
+from accelerate.utils import gather_object
 from datasets import Dataset
 from transformers import DataCollator, PreTrainedModel, PreTrainedTokenizerBase, Trainer, TrainingArguments
 from transformers.trainer_callback import TrainerCallback
@@ -26,7 +29,7 @@ from transformers.trainer_utils import EvalPrediction
 
 from ..import_utils import is_peft_available
 from .reward_config import RewardConfig
-from .utils import RewardDataCollatorWithPadding, compute_accuracy
+from .utils import RewardDataCollatorWithPadding, compute_accuracy, print_rich_table
 
 
 if is_peft_available():
@@ -53,9 +56,11 @@ class RewardTrainer(Trainer):
     If you don't pass a margin, no margin will be used.
     """
 
+    _tag_names = ["trl", "reward-trainer"]
+
     def __init__(
         self,
-        model: Union[PreTrainedModel, nn.Module] = None,
+        model: Optional[Union[PreTrainedModel, nn.Module]] = None,
         args: Optional[RewardConfig] = None,
         data_collator: Optional[DataCollator] = None,
         train_dataset: Optional[Dataset] = None,
@@ -135,7 +140,7 @@ class RewardTrainer(Trainer):
                         inspect.signature(prepare_model_for_kbit_training).parameters
                     )
 
-                    preprare_model_kwargs = {"use_gradient_checkpointing": args.gradient_checkpointing}
+                    prepare_model_kwargs = {"use_gradient_checkpointing": args.gradient_checkpointing}
 
                     if not _supports_gc_kwargs and args.gradient_checkpointing_kwargs is not None:
                         warnings.warn(
@@ -143,9 +148,9 @@ class RewardTrainer(Trainer):
                             "please update to the latest version of peft to use `gradient_checkpointing_kwargs`."
                         )
                     elif _supports_gc_kwargs and args.gradient_checkpointing_kwargs is not None:
-                        preprare_model_kwargs["gradient_checkpointing_kwargs"] = args.gradient_checkpointing_kwargs
+                        prepare_model_kwargs["gradient_checkpointing_kwargs"] = args.gradient_checkpointing_kwargs
 
-                    model = prepare_model_for_kbit_training(model, **preprare_model_kwargs)
+                    model = prepare_model_for_kbit_training(model, **prepare_model_kwargs)
 
                 model = get_peft_model(model, peft_config)
 
@@ -194,18 +199,22 @@ class RewardTrainer(Trainer):
         else:
             self.use_reward_data_collator = False
         super().__init__(
-            model,
-            args,
-            data_collator,
-            train_dataset,
-            eval_dataset,
-            tokenizer,
-            model_init,
-            compute_metrics,
-            callbacks,
-            optimizers,
-            preprocess_logits_for_metrics,
+            model=model,
+            args=args,
+            data_collator=data_collator,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            tokenizer=tokenizer,
+            model_init=model_init,
+            compute_metrics=compute_metrics,
+            callbacks=callbacks,
+            optimizers=optimizers,
+            preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         )
+
+        # Add tags for models that have been loaded with the correct transformers version
+        if hasattr(self.model, "add_model_tags"):
+            self.model.add_model_tags(self._tag_names)
 
     def compute_loss(
         self,
@@ -273,3 +282,39 @@ class RewardTrainer(Trainer):
         labels = self._prepare_inputs(labels)
 
         return loss, logits, labels
+
+    def evaluate(self, *args, **kwargs):
+        num_print_samples = kwargs.pop("num_print_samples", 4)
+        self.visualize_samples(num_print_samples)
+        return super().evaluate(*args, **kwargs)
+
+    def visualize_samples(self, num_print_samples: int):
+        """
+        Visualize the reward model logits prediction
+
+        Args:
+            num_print_samples (`int`, defaults to `4`):
+                The number of samples to print. Set to `-1` to print all samples.
+        """
+        eval_dataloader = self.get_eval_dataloader()
+        table = defaultdict(list)
+        for _, inputs in enumerate(eval_dataloader):
+            _, logits, _ = self.prediction_step(self.model, inputs, prediction_loss_only=False)
+            chosen_text = self.tokenizer.batch_decode(inputs["input_ids_chosen"], skip_special_tokens=True)
+            rejected_text = self.tokenizer.batch_decode(inputs["input_ids_rejected"], skip_special_tokens=True)
+            table["chosen_text"].extend(gather_object(chosen_text))
+            table["rejected_text"].extend(gather_object(rejected_text))
+            table["logits"].extend(
+                gather_object([[round(inner_item, 4) for inner_item in item] for item in logits.tolist()])
+            )
+            if num_print_samples >= 0 and len(table["chosen_text"]) >= num_print_samples:
+                break
+        df = pd.DataFrame(table)
+        print_rich_table(pd.DataFrame(table))
+        if self.accelerator.process_index == 0:
+            print_rich_table(df[:num_print_samples])
+            if "wandb" in self.args.report_to:
+                import wandb
+
+                if wandb.run is not None:
+                    wandb.log({"completions": wandb.Table(dataframe=df)})

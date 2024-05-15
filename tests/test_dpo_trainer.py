@@ -18,9 +18,9 @@ import torch
 from datasets import Dataset
 from parameterized import parameterized
 from pytest import mark
-from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer, TrainingArguments
+from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 
-from trl import DPOTrainer
+from trl import DPOConfig, DPOTrainer
 
 from .testing_utils import require_bitsandbytes, require_no_wandb, require_peft
 
@@ -88,11 +88,17 @@ class DPOTrainerTester(unittest.TestCase):
             ["t5", "ipo", True],
             ["gpt2", "kto_pair", True],
             ["t5", "kto_pair", False],
+            ["gpt2", "bco_pair", False],
+            ["t5", "bco_pair", True],
+            ["gpt2", "sppo_hard", False],
+            ["t5", "sppo_hard", True],
+            ["gpt2", "nca_pair", False],
+            ["t5", "nca_pair", True],
         ]
     )
     def test_dpo_trainer(self, name, loss_type, pre_compute):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            training_args = TrainingArguments(
+            training_args = DPOConfig(
                 output_dir=tmp_dir,
                 per_device_train_batch_size=2,
                 max_steps=3,
@@ -100,6 +106,9 @@ class DPOTrainerTester(unittest.TestCase):
                 gradient_accumulation_steps=1,
                 learning_rate=9e-1,
                 evaluation_strategy="steps",
+                beta=0.1,
+                loss_type=loss_type,
+                precompute_ref_log_probs=pre_compute,
             )
 
             dummy_dataset = self._init_dummy_dataset()
@@ -113,34 +122,34 @@ class DPOTrainerTester(unittest.TestCase):
                 ref_model = self.t5_ref_model
                 tokenizer = self.t5_tokenizer
 
+            if name == "t5" and loss_type == "nca_pair":
+                self.skipTest("For some reason t5 + nca_pair does not compute gradients properly on tiny models")
+
             trainer = DPOTrainer(
                 model=model,
                 ref_model=ref_model,
-                beta=0.1,
-                loss_type=loss_type,
                 args=training_args,
                 tokenizer=tokenizer,
                 train_dataset=dummy_dataset,
                 eval_dataset=dummy_dataset,
-                precompute_ref_log_probs=pre_compute,
             )
 
             previous_trainable_params = {n: param.clone() for n, param in trainer.model.named_parameters()}
 
             trainer.train()
 
-            self.assertIsNotNone(trainer.state.log_history[-1]["train_loss"])
+            assert trainer.state.log_history[-1]["train_loss"] is not None
 
             # check the params have changed
             for n, param in previous_trainable_params.items():
                 new_param = trainer.model.get_parameter(n)
                 # check the params have changed - ignore 0 biases
                 if param.sum() != 0:
-                    self.assertFalse(torch.equal(param, new_param))
+                    assert not torch.allclose(param, new_param, rtol=1e-12, atol=1e-12)
 
     def test_dpo_trainer_without_providing_ref_model(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            training_args = TrainingArguments(
+            training_args = DPOConfig(
                 output_dir=tmp_dir,
                 per_device_train_batch_size=2,
                 max_steps=3,
@@ -148,6 +157,8 @@ class DPOTrainerTester(unittest.TestCase):
                 gradient_accumulation_steps=4,
                 learning_rate=9e-1,
                 evaluation_strategy="steps",
+                beta=0.1,
+                precompute_ref_log_probs=True,
             )
 
             dummy_dataset = self._init_dummy_dataset()
@@ -155,26 +166,24 @@ class DPOTrainerTester(unittest.TestCase):
             trainer = DPOTrainer(
                 model=self.model,
                 ref_model=None,
-                beta=0.1,
                 args=training_args,
                 tokenizer=self.tokenizer,
                 train_dataset=dummy_dataset,
                 eval_dataset=dummy_dataset,
-                precompute_ref_log_probs=True,
             )
 
             previous_trainable_params = {n: param.clone() for n, param in trainer.model.named_parameters()}
 
             trainer.train()
 
-            self.assertIsNotNone(trainer.state.log_history[-1]["train_loss"])
+            assert trainer.state.log_history[-1]["train_loss"] is not None
 
             # check the params have changed
             for n, param in previous_trainable_params.items():
                 new_param = trainer.model.get_parameter(n)
                 # check the params have changed - ignore 0 biases
                 if param.sum() != 0:
-                    self.assertFalse(torch.equal(param, new_param))
+                    assert not torch.equal(param, new_param)
 
     @require_peft
     @mark.peft_test
@@ -190,7 +199,7 @@ class DPOTrainerTester(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            training_args = TrainingArguments(
+            training_args = DPOConfig(
                 output_dir=tmp_dir,
                 per_device_train_batch_size=2,
                 max_steps=3,
@@ -198,6 +207,8 @@ class DPOTrainerTester(unittest.TestCase):
                 gradient_accumulation_steps=4,
                 learning_rate=9e-1,
                 evaluation_strategy="steps",
+                beta=0.1,
+                precompute_ref_log_probs=True,
             )
 
             dummy_dataset = self._init_dummy_dataset()
@@ -205,20 +216,18 @@ class DPOTrainerTester(unittest.TestCase):
             trainer = DPOTrainer(
                 model=self.model,
                 ref_model=None,
-                beta=0.1,
                 args=training_args,
                 tokenizer=self.tokenizer,
                 train_dataset=dummy_dataset,
                 eval_dataset=dummy_dataset,
                 peft_config=lora_config,
-                precompute_ref_log_probs=True,
             )
 
             previous_trainable_params = {n: param.clone() for n, param in trainer.model.named_parameters()}
 
             trainer.train()
 
-            self.assertIsNotNone(trainer.state.log_history[-1]["train_loss"])
+            assert trainer.state.log_history[-1]["train_loss"] is not None
 
             # check the params have changed
             for n, param in previous_trainable_params.items():
@@ -226,11 +235,11 @@ class DPOTrainerTester(unittest.TestCase):
                     new_param = trainer.model.get_parameter(n)
                     # check the params have changed - ignore 0 biases
                     if param.sum() != 0:
-                        self.assertFalse(torch.equal(param, new_param))
+                        assert not torch.equal(param, new_param)
 
     def test_dpo_trainer_padding_token_is_none(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            training_args = TrainingArguments(
+            training_args = DPOConfig(
                 output_dir=tmp_dir,
                 per_device_train_batch_size=2,
                 max_steps=3,
@@ -238,6 +247,7 @@ class DPOTrainerTester(unittest.TestCase):
                 gradient_accumulation_steps=1,
                 learning_rate=9e-1,
                 evaluation_strategy="steps",
+                beta=0.1,
             )
 
             dummy_dataset = self._init_dummy_dataset()
@@ -254,7 +264,42 @@ class DPOTrainerTester(unittest.TestCase):
                 trainer = DPOTrainer(
                     model=self.model,
                     ref_model=None,
-                    beta=0.1,
+                    args=training_args,
+                    tokenizer=tokenizer,
+                    train_dataset=dummy_dataset,
+                    eval_dataset=dummy_dataset,
+                )
+
+                trainer.train()
+
+    def test_dpo_trainer_w_dataset_num_proc(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            training_args = DPOConfig(
+                output_dir=tmp_dir,
+                per_device_train_batch_size=2,
+                max_steps=3,
+                remove_unused_columns=False,
+                gradient_accumulation_steps=1,
+                learning_rate=9e-1,
+                evaluation_strategy="steps",
+                beta=0.1,
+                dataset_num_proc=5,
+            )
+
+            dummy_dataset = self._init_dummy_dataset()
+
+            tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+            tokenizer.pad_token = None
+
+            with self.assertRaisesRegex(
+                ValueError,
+                expected_regex=r"Padding is enabled, but the tokenizer is not configured with a padding token."
+                r" Explicitly set `tokenizer.pad_token` \(e.g. `tokenizer.pad_token = tokenizer.eos_token`\)"
+                r" before calling the trainer.",
+            ):
+                trainer = DPOTrainer(
+                    model=self.model,
+                    ref_model=None,
                     args=training_args,
                     tokenizer=tokenizer,
                     train_dataset=dummy_dataset,
@@ -266,7 +311,7 @@ class DPOTrainerTester(unittest.TestCase):
     @require_no_wandb
     def test_dpo_trainer_generate_during_eval_no_wandb(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            training_args = TrainingArguments(
+            training_args = DPOConfig(
                 output_dir=tmp_dir,
                 per_device_train_batch_size=2,
                 max_steps=3,
@@ -274,6 +319,8 @@ class DPOTrainerTester(unittest.TestCase):
                 gradient_accumulation_steps=1,
                 learning_rate=9e-1,
                 evaluation_strategy="steps",
+                beta=0.1,
+                generate_during_eval=True,
             )
 
             dummy_dataset = self._init_dummy_dataset()
@@ -286,12 +333,10 @@ class DPOTrainerTester(unittest.TestCase):
                 DPOTrainer(
                     model=self.model,
                     ref_model=None,
-                    beta=0.1,
                     args=training_args,
                     tokenizer=self.tokenizer,
                     train_dataset=dummy_dataset,
                     eval_dataset=dummy_dataset,
-                    generate_during_eval=True,
                 )
 
     @require_peft
@@ -312,7 +357,7 @@ class DPOTrainerTester(unittest.TestCase):
         model_peft = get_peft_model(model, lora_config)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            training_args = TrainingArguments(
+            training_args = DPOConfig(
                 output_dir=tmp_dir,
                 per_device_train_batch_size=2,
                 max_steps=3,
@@ -320,6 +365,8 @@ class DPOTrainerTester(unittest.TestCase):
                 gradient_accumulation_steps=4,
                 learning_rate=9e-1,
                 evaluation_strategy="steps",
+                beta=0.1,
+                precompute_ref_log_probs=True,
             )
 
             dummy_dataset = self._init_dummy_dataset()
@@ -328,13 +375,11 @@ class DPOTrainerTester(unittest.TestCase):
             trainer = DPOTrainer(
                 model=model_peft,
                 ref_model=None,
-                beta=0.1,
                 args=training_args,
                 tokenizer=self.tokenizer,
                 train_dataset=dummy_dataset,
                 eval_dataset=dummy_dataset,
                 peft_config=lora_config,
-                precompute_ref_log_probs=True,
             )
 
             # train the model
@@ -356,7 +401,7 @@ class DPOTrainerTester(unittest.TestCase):
         # Note this test only works on compute capability > 7 GPU devices
         from peft import LoraConfig
 
-        model_id = "HuggingFaceM4/tiny-random-LlamaForCausalLM"
+        model_id = "trl-internal-testing/tiny-random-LlamaForCausalLM"
         tokenizer = AutoTokenizer.from_pretrained(model_id)
 
         lora_config = LoraConfig(
@@ -371,7 +416,7 @@ class DPOTrainerTester(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(model_id, load_in_4bit=True)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            training_args = TrainingArguments(
+            training_args = DPOConfig(
                 output_dir=tmp_dir,
                 per_device_train_batch_size=2,
                 max_steps=3,
@@ -380,6 +425,8 @@ class DPOTrainerTester(unittest.TestCase):
                 learning_rate=9e-1,
                 evaluation_strategy="steps",
                 bf16=True,
+                beta=0.1,
+                generate_during_eval=True,
             )
 
             dummy_dataset = self._init_dummy_dataset()
@@ -388,13 +435,11 @@ class DPOTrainerTester(unittest.TestCase):
             trainer = DPOTrainer(
                 model=model,
                 ref_model=None,
-                beta=0.1,
                 args=training_args,
                 tokenizer=tokenizer,
                 train_dataset=dummy_dataset,
                 eval_dataset=dummy_dataset,
                 peft_config=lora_config,
-                generate_during_eval=True,
             )
 
             # train the model
@@ -417,6 +462,10 @@ class DPOTrainerTester(unittest.TestCase):
             ["gpt2", "kto_pair", False, True],
             ["gpt2", "kto_pair", True, False],
             ["gpt2", "kto_pair", True, True],
+            ["gpt2", "bco_pair", False, False],
+            ["gpt2", "bco_pair", False, True],
+            ["gpt2", "bco_pair", True, False],
+            ["gpt2", "bco_pair", True, True],
         ]
     )
     @require_bitsandbytes
@@ -439,7 +488,7 @@ class DPOTrainerTester(unittest.TestCase):
         model = AutoModelForCausalLM.from_pretrained(self.model_id, load_in_4bit=True)
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            training_args = TrainingArguments(
+            training_args = DPOConfig(
                 output_dir=tmp_dir,
                 per_device_train_batch_size=2,
                 max_steps=3,
@@ -448,6 +497,10 @@ class DPOTrainerTester(unittest.TestCase):
                 learning_rate=9e-1,
                 evaluation_strategy="steps",
                 bf16=True,
+                beta=0.1,
+                generate_during_eval=gen_during_eval,
+                loss_type=loss_type,
+                precompute_ref_log_probs=pre_compute,
             )
 
             dummy_dataset = self._init_dummy_dataset()
@@ -456,15 +509,11 @@ class DPOTrainerTester(unittest.TestCase):
             trainer = DPOTrainer(
                 model=model,
                 ref_model=None,
-                beta=0.1,
                 args=training_args,
                 tokenizer=self.tokenizer,
                 train_dataset=dummy_dataset,
                 eval_dataset=dummy_dataset,
                 peft_config=lora_config,
-                generate_during_eval=gen_during_eval,
-                loss_type=loss_type,
-                precompute_ref_log_probs=pre_compute,
             )
 
             # train the model
@@ -472,3 +521,153 @@ class DPOTrainerTester(unittest.TestCase):
 
             # save peft adapter
             trainer.save_model()
+
+    @require_peft
+    def test_dpo_lora_tags(self):
+        from peft import LoraConfig
+
+        model_id = "trl-internal-testing/tiny-random-LlamaForCausalLM"
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+        lora_config = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+
+        # lora model
+        model = AutoModelForCausalLM.from_pretrained(model_id)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            training_args = DPOConfig(
+                output_dir=tmp_dir,
+                per_device_train_batch_size=2,
+                max_steps=3,
+                remove_unused_columns=False,
+                gradient_accumulation_steps=4,
+                learning_rate=9e-1,
+                evaluation_strategy="steps",
+                beta=0.1,
+            )
+
+            dummy_dataset = self._init_dummy_dataset()
+
+            # dpo train lora model with a lora config
+            trainer = DPOTrainer(
+                model=model,
+                ref_model=None,
+                args=training_args,
+                tokenizer=tokenizer,
+                train_dataset=dummy_dataset,
+                eval_dataset=dummy_dataset,
+                peft_config=lora_config,
+            )
+
+            assert trainer.model.model_tags == trainer._tag_names
+
+    @require_peft
+    def test_dpo_tags(self):
+        model_id = "HuggingFaceM4/tiny-random-LlamaForCausalLM"
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+        # lora model
+        model = AutoModelForCausalLM.from_pretrained(model_id)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            training_args = DPOConfig(
+                output_dir=tmp_dir,
+                per_device_train_batch_size=2,
+                max_steps=3,
+                remove_unused_columns=False,
+                gradient_accumulation_steps=4,
+                learning_rate=9e-1,
+                evaluation_strategy="steps",
+                beta=0.1,
+            )
+
+            dummy_dataset = self._init_dummy_dataset()
+
+            # dpo train lora model with a lora config
+            trainer = DPOTrainer(
+                model=model,
+                ref_model=None,
+                args=training_args,
+                tokenizer=tokenizer,
+                train_dataset=dummy_dataset,
+                eval_dataset=dummy_dataset,
+            )
+
+            assert trainer.model.model_tags == trainer._tag_names
+
+    @require_peft
+    @mark.peft_test
+    def test_dpo_lora_force_use_ref(self):
+        from peft import LoraConfig, get_peft_model
+
+        lora_config = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+
+        # lora model
+        model = AutoModelForCausalLM.from_pretrained(self.model_id)
+        model_peft = get_peft_model(model, lora_config)
+
+        ref_model = AutoModelForCausalLM.from_pretrained(self.model_id)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            training_args = DPOConfig(
+                output_dir=tmp_dir,
+                per_device_train_batch_size=2,
+                max_steps=3,
+                remove_unused_columns=False,
+                gradient_accumulation_steps=4,
+                learning_rate=9e-1,
+                evaluation_strategy="steps",
+                beta=0.1,
+            )
+
+            dummy_dataset = self._init_dummy_dataset()
+
+            with self.assertRaises(ValueError):
+                # passing a peft_model as model and ref_model should error out,
+                # unless you pass `force_use_ref_model`
+                trainer = DPOTrainer(
+                    model=model_peft,
+                    ref_model=ref_model,
+                    args=training_args,
+                    tokenizer=self.tokenizer,
+                    train_dataset=dummy_dataset,
+                    eval_dataset=dummy_dataset,
+                    peft_config=lora_config,
+                )
+
+            training_args = DPOConfig(
+                output_dir=tmp_dir,
+                per_device_train_batch_size=2,
+                max_steps=3,
+                remove_unused_columns=False,
+                gradient_accumulation_steps=4,
+                learning_rate=9e-1,
+                evaluation_strategy="steps",
+                beta=0.1,
+                force_use_ref_model=True,
+            )
+
+            trainer = DPOTrainer(
+                model=model_peft,
+                ref_model=ref_model,
+                args=training_args,
+                tokenizer=self.tokenizer,
+                train_dataset=dummy_dataset,
+                eval_dataset=dummy_dataset,
+                peft_config=lora_config,
+            )
+
+            # train the model
+            trainer.train()

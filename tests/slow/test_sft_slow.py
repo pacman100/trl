@@ -20,9 +20,9 @@ import torch
 from accelerate.utils.memory import release_memory
 from datasets import load_dataset
 from parameterized import parameterized
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainingArguments
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-from trl import SFTTrainer, is_peft_available
+from trl import SFTConfig, SFTTrainer, is_peft_available
 from trl.models.utils import setup_chat_format
 
 from ..testing_utils import require_bitsandbytes, require_peft, require_torch_gpu, require_torch_multi_gpu
@@ -61,12 +61,15 @@ class SFTTrainerSlowTester(unittest.TestCase):
         as expected.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            args = TrainingArguments(
+            args = SFTConfig(
                 output_dir=tmp_dir,
                 logging_strategy="no",
                 report_to="none",
                 per_device_train_batch_size=2,
                 max_steps=10,
+                packing=packing,
+                dataset_text_field=self.dataset_text_field,
+                max_seq_length=self.max_seq_length,
             )
 
             trainer = SFTTrainer(
@@ -74,9 +77,6 @@ class SFTTrainerSlowTester(unittest.TestCase):
                 args=args,
                 train_dataset=self.train_dataset,
                 eval_dataset=self.eval_dataset,
-                packing=packing,
-                dataset_text_field=self.dataset_text_field,
-                max_seq_length=self.max_seq_length,
             )
 
             trainer.train()
@@ -88,12 +88,15 @@ class SFTTrainerSlowTester(unittest.TestCase):
         as expected.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            args = TrainingArguments(
+            args = SFTConfig(
                 output_dir=tmp_dir,
                 logging_strategy="no",
                 report_to="none",
                 per_device_train_batch_size=2,
                 max_steps=10,
+                packing=packing,
+                dataset_text_field=self.dataset_text_field,
+                max_seq_length=self.max_seq_length,
             )
 
             model = AutoModelForCausalLM.from_pretrained(model_name)
@@ -105,9 +108,6 @@ class SFTTrainerSlowTester(unittest.TestCase):
                 tokenizer=tokenizer,
                 train_dataset=self.train_dataset,
                 eval_dataset=self.eval_dataset,
-                packing=packing,
-                dataset_text_field=self.dataset_text_field,
-                max_seq_length=self.max_seq_length,
             )
 
             trainer.train()
@@ -122,13 +122,16 @@ class SFTTrainerSlowTester(unittest.TestCase):
         as expected.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            args = TrainingArguments(
+            args = SFTConfig(
                 output_dir=tmp_dir,
                 logging_strategy="no",
                 report_to="none",
                 per_device_train_batch_size=2,
                 max_steps=10,
                 fp16=True,
+                packing=packing,
+                dataset_text_field=self.dataset_text_field,
+                max_seq_length=self.max_seq_length,
             )
 
             model = AutoModelForCausalLM.from_pretrained(model_name)
@@ -140,13 +143,10 @@ class SFTTrainerSlowTester(unittest.TestCase):
                 tokenizer=tokenizer,
                 train_dataset=self.train_dataset,
                 eval_dataset=self.eval_dataset,
-                packing=packing,
-                dataset_text_field=self.dataset_text_field,
-                max_seq_length=self.max_seq_length,
                 peft_config=self.peft_config,
             )
 
-            self.assertTrue(isinstance(trainer.model, PeftModel))
+            assert isinstance(trainer.model, PeftModel)
 
             trainer.train()
 
@@ -159,13 +159,16 @@ class SFTTrainerSlowTester(unittest.TestCase):
         as expected in mixed precision.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            args = TrainingArguments(
+            args = SFTConfig(
                 output_dir=tmp_dir,
                 logging_strategy="no",
                 report_to="none",
                 per_device_train_batch_size=2,
                 max_steps=10,
                 fp16=True,  # this is sufficient to enable amp
+                packing=packing,
+                dataset_text_field=self.dataset_text_field,
+                max_seq_length=self.max_seq_length,
             )
 
             model = AutoModelForCausalLM.from_pretrained(model_name)
@@ -177,9 +180,6 @@ class SFTTrainerSlowTester(unittest.TestCase):
                 tokenizer=tokenizer,
                 train_dataset=self.train_dataset,
                 eval_dataset=self.eval_dataset,
-                packing=packing,
-                dataset_text_field=self.dataset_text_field,
-                max_seq_length=self.max_seq_length,
             )
 
             trainer.train()
@@ -193,12 +193,15 @@ class SFTTrainerSlowTester(unittest.TestCase):
         as expected in mixed precision + different scenarios of gradient_checkpointing.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            args = TrainingArguments(
+            args = SFTConfig(
                 output_dir=tmp_dir,
                 logging_strategy="no",
                 report_to="none",
                 per_device_train_batch_size=2,
                 max_steps=10,
+                packing=packing,
+                dataset_text_field=self.dataset_text_field,
+                max_seq_length=self.max_seq_length,
                 fp16=True,  # this is sufficient to enable amp
                 gradient_checkpointing=True,
                 gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
@@ -213,9 +216,6 @@ class SFTTrainerSlowTester(unittest.TestCase):
                 tokenizer=tokenizer,
                 train_dataset=self.train_dataset,
                 eval_dataset=self.eval_dataset,
-                packing=packing,
-                dataset_text_field=self.dataset_text_field,
-                max_seq_length=self.max_seq_length,
             )
 
             trainer.train()
@@ -230,12 +230,15 @@ class SFTTrainerSlowTester(unittest.TestCase):
         as expected in mixed precision + different scenarios of gradient_checkpointing.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            args = TrainingArguments(
+            args = SFTConfig(
                 output_dir=tmp_dir,
                 logging_strategy="no",
                 report_to="none",
                 per_device_train_batch_size=2,
                 max_steps=10,
+                packing=packing,
+                dataset_text_field=self.dataset_text_field,
+                max_seq_length=self.max_seq_length,
                 fp16=True,  # this is sufficient to enable amp
                 gradient_checkpointing=True,
                 gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
@@ -250,13 +253,10 @@ class SFTTrainerSlowTester(unittest.TestCase):
                 tokenizer=tokenizer,
                 train_dataset=self.train_dataset,
                 eval_dataset=self.eval_dataset,
-                packing=packing,
-                dataset_text_field=self.dataset_text_field,
-                max_seq_length=self.max_seq_length,
                 peft_config=self.peft_config,
             )
 
-            self.assertTrue(isinstance(trainer.model, PeftModel))
+            assert isinstance(trainer.model, PeftModel)
 
             trainer.train()
 
@@ -274,12 +274,15 @@ class SFTTrainerSlowTester(unittest.TestCase):
         as expected in mixed precision + different scenarios of gradient_checkpointing (single, multi-gpu, etc).
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            args = TrainingArguments(
+            args = SFTConfig(
                 output_dir=tmp_dir,
                 logging_strategy="no",
                 report_to="none",
                 per_device_train_batch_size=2,
                 max_steps=10,
+                packing=packing,
+                dataset_text_field=self.dataset_text_field,
+                max_seq_length=self.max_seq_length,
                 fp16=True,  # this is sufficient to enable amp
                 gradient_checkpointing=True,
                 gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
@@ -294,9 +297,6 @@ class SFTTrainerSlowTester(unittest.TestCase):
                 tokenizer=tokenizer,
                 train_dataset=self.train_dataset,
                 eval_dataset=self.eval_dataset,
-                packing=packing,
-                dataset_text_field=self.dataset_text_field,
-                max_seq_length=self.max_seq_length,
             )
 
             trainer.train()
@@ -312,12 +312,15 @@ class SFTTrainerSlowTester(unittest.TestCase):
         as expected in mixed precision + different scenarios of gradient_checkpointing.
         """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            args = TrainingArguments(
+            args = SFTConfig(
                 output_dir=tmp_dir,
                 logging_strategy="no",
                 report_to="none",
                 per_device_train_batch_size=2,
                 max_steps=10,
+                packing=packing,
+                dataset_text_field=self.dataset_text_field,
+                max_seq_length=self.max_seq_length,
                 fp16=True,  # this is sufficient to enable amp
                 gradient_checkpointing=True,
                 gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
@@ -334,13 +337,10 @@ class SFTTrainerSlowTester(unittest.TestCase):
                 tokenizer=tokenizer,
                 train_dataset=self.train_dataset,
                 eval_dataset=self.eval_dataset,
-                packing=packing,
-                dataset_text_field=self.dataset_text_field,
-                max_seq_length=self.max_seq_length,
                 peft_config=self.peft_config,
             )
 
-            self.assertTrue(isinstance(trainer.model, PeftModel))
+            assert isinstance(trainer.model, PeftModel)
 
             trainer.train()
 
@@ -357,7 +357,9 @@ class SFTTrainerSlowTester(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             train_dataset = load_dataset("trl-internal-testing/dolly-chatml-sft", split="train")
 
-            args = TrainingArguments(
+            args = SFTConfig(
+                packing=packing,
+                max_seq_length=self.max_seq_length,
                 output_dir=tmp_dir,
                 logging_strategy="no",
                 report_to="none",
@@ -378,12 +380,10 @@ class SFTTrainerSlowTester(unittest.TestCase):
                 args=args,
                 tokenizer=tokenizer,
                 train_dataset=train_dataset,
-                packing=packing,
-                max_seq_length=self.max_seq_length,
                 peft_config=self.peft_config,
             )
 
-            self.assertTrue(isinstance(trainer.model, PeftModel))
+            assert isinstance(trainer.model, PeftModel)
 
             trainer.train()
 
